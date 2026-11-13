@@ -1,24 +1,51 @@
 import { useState, useEffect } from 'react';
-import { Bell, Send, Save } from 'lucide-react';
+import { Bell, Send, Save, Plus, Trash2 } from 'lucide-react';
 import { adminFetchNotifConfig, adminSetNotifConfig, adminTestNotif } from '../../utils/api.js';
 import NotifFilter from './NotifFilter.jsx';
 
-// Safe defaults — always a valid object even if backend returns garbage
 const DEFAULTS = {
   discord:   { enabled: false, url: '' },
   telegram:  { enabled: false, token: '', chatId: '' },
   gotify:    { enabled: false, url: '', token: '', priority: 5 },
-  pushover:  { enabled: false, token: '', userKey: '', priority: 0, sound: 'default' },
+  pushover:  [],
   mqtt:      { enabled: false, broker: '', topic: 'pagermonitor/messages' },
 };
 
+const emptyPushoverEntry = () => ({
+  enabled: true,
+  name: 'Pushover 1',
+  token: '',
+  userKey: '',
+  priority: 0,
+  sound: 'default',
+  capcodes: [],
+});
+
 function sanitise(raw) {
   if (!raw || typeof raw !== 'object') return structuredClone(DEFAULTS);
+
   const out = {};
-  for (const svc of ['discord', 'telegram', 'gotify', 'pushover', 'mqtt']) {
+  for (const svc of ['discord', 'telegram', 'gotify', 'mqtt']) {
     const src = (raw[svc] && typeof raw[svc] === 'object') ? raw[svc] : {};
-    out[svc]  = { ...DEFAULTS[svc], ...src };
+    out[svc] = { ...DEFAULTS[svc], ...src };
   }
+
+  const legacyPushover = raw.pushover && typeof raw.pushover === 'object' && !Array.isArray(raw.pushover)
+    ? [raw.pushover]
+    : raw.pushover;
+
+  out.pushover = Array.isArray(legacyPushover)
+    ? legacyPushover.map((entry, idx) => ({
+        enabled: !!entry.enabled,
+        name: String(entry.name || `Pushover ${idx + 1}`),
+        token: String(entry.token || ''),
+        userKey: String(entry.userKey || ''),
+        priority: Number(entry.priority) || 0,
+        sound: String(entry.sound || 'default'),
+        capcodes: Array.isArray(entry.capcodes) ? entry.capcodes : [],
+      }))
+    : [];
+
   return out;
 }
 
@@ -95,6 +122,144 @@ function ServiceBlock({ title, icon, color, svc, cfg, onToggle, onChange, onTest
   );
 }
 
+function PushoverEditor({ list, onChange }) {
+  const setItem = (index, patch) => {
+    const next = list.map((item, i) => i === index ? { ...item, ...patch } : item);
+    onChange(next);
+  };
+
+  const addItem = () => onChange([...list, emptyPushoverEntry()]);
+
+  const removeItem = (index) => {
+    if (list.length <= 1) {
+      onChange([emptyPushoverEntry()]);
+      return;
+    }
+    onChange(list.filter((_, i) => i !== index));
+  };
+
+  return (
+    <div className="pm-card" style={{ marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.9rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span style={{ fontSize: '1.1rem' }}>📲</span>
+          <span style={{ fontWeight: 700, color: 'var(--text-1)' }}>Pushover</span>
+        </div>
+        <button className="pm-btn" onClick={addItem} style={{ padding: '0.35rem 0.6rem', fontSize: '0.72rem' }}>
+          <Plus size={12} /> Add instance
+        </button>
+      </div>
+
+      {(!Array.isArray(list) || list.length === 0) && (
+        <div style={{ fontSize: '0.8rem', color: 'var(--text-3)', marginBottom: '0.5rem' }}>
+          No Pushover instances configured.
+        </div>
+      )}
+
+      {Array.isArray(list) && list.map((item, index) => (
+        <div key={`pushover-${index}`} style={{
+          border: '1px solid var(--border)',
+          borderRadius: '0.7rem',
+          padding: '0.8rem',
+          marginBottom: '0.75rem',
+          background: 'var(--bg-3)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.7rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontWeight: 600, color: 'var(--text-1)' }}>{item.name || `Pushover ${index + 1}`}</span>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <Toggle
+                on={!!item.enabled}
+                color="var(--accent-amber)"
+                onToggle={() => setItem(index, { enabled: !item.enabled })}
+              />
+              <button
+                className="pm-btn"
+                onClick={() => removeItem(index)}
+                style={{ padding: '0.3rem 0.5rem', fontSize: '0.72rem', background: 'var(--bg-4)' }}
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: '0.6rem' }}>
+            <div>
+              <label className="pm-label">Name</label>
+              <input
+                className="pm-input"
+                value={item.name || ''}
+                onChange={e => setItem(index, { name: e.target.value })}
+                placeholder="Office Pushover"
+              />
+            </div>
+
+            <div>
+              <label className="pm-label">API token</label>
+              <input
+                className="pm-input"
+                type="password"
+                value={item.token || ''}
+                onChange={e => setItem(index, { token: e.target.value })}
+                placeholder="App API token"
+              />
+            </div>
+
+            <div>
+              <label className="pm-label">User key</label>
+              <input
+                className="pm-input"
+                type="password"
+                value={item.userKey || ''}
+                onChange={e => setItem(index, { userKey: e.target.value })}
+                placeholder="User/group key"
+              />
+            </div>
+
+            <div>
+              <label className="pm-label">Capcodes</label>
+              <input
+                className="pm-input"
+                value={(item.capcodes || []).join(', ')}
+                onChange={e => setItem(index, {
+                  capcodes: e.target.value
+                    .split(',')
+                    .map(v => v.trim())
+                    .filter(Boolean)
+                })}
+                placeholder="1234567, 7654321 (optional; blank = all capcodes)"
+              />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
+              <div>
+                <label className="pm-label">Priority</label>
+                <input
+                  className="pm-input"
+                  value={item.priority ?? 0}
+                  onChange={e => setItem(index, { priority: Number(e.target.value) || 0 })}
+                  placeholder="-2 to 2"
+                />
+              </div>
+
+              <div>
+                <label className="pm-label">Sound</label>
+                <input
+                  className="pm-input"
+                  value={item.sound || 'default'}
+                  onChange={e => setItem(index, { sound: e.target.value })}
+                  placeholder="default / bike / bugle / magic"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const FIELDS = {
   discord:  [{ key: 'url',      label: 'Webhook URL',       hint: 'https://discord.com/api/webhooks/…', secret: false }],
   telegram: [
@@ -106,12 +271,6 @@ const FIELDS = {
     { key: 'token',    label: 'App token',          hint: 'From Gotify app settings',       secret: true  },
     { key: 'priority', label: 'Priority',            hint: '1=low  5=normal  8=high  10=urgent', secret: false },
   ],
-  pushover: [
-    { key: 'token',    label: 'API Token',  hint: 'App API token from pushover.net',           secret: true  },
-    { key: 'userKey',  label: 'User Key',   hint: 'Your user/group key from pushover.net',     secret: true  },
-    { key: 'priority', label: 'Priority',   hint: '-2 silent  -1 quiet  0 normal  1 high  2 emergency', secret: false },
-    { key: 'sound',    label: 'Sound',      hint: 'pushover, bike, bugle, magic, none, … (leave empty for default)', secret: false },
-  ],
   mqtt: [
     { key: 'broker', label: 'Broker URL', hint: 'mqtt://192.168.1.100:1883', secret: false },
     { key: 'topic',  label: 'Topic',      hint: 'pagermonitor/messages',     secret: false },
@@ -122,7 +281,6 @@ const SERVICE_META = [
   { svc: 'discord',  title: 'Discord',  icon: '💬', color: 'var(--accent-blue)'   },
   { svc: 'telegram', title: 'Telegram', icon: '✈️',  color: 'var(--accent-blue)'   },
   { svc: 'gotify',   title: 'Gotify',   icon: '🔔', color: 'var(--accent-green)'  },
-  { svc: 'pushover', title: 'Pushover', icon: '📲', color: 'var(--accent-amber)'  },
   { svc: 'mqtt',     title: 'MQTT',     icon: '📡', color: 'var(--accent-green)'  },
 ];
 
@@ -141,7 +299,6 @@ export default function NotifConfig() {
 
   const flash = (type, text) => { setMsg({ type, text }); setTimeout(() => setMsg(null), 4000); };
 
-  // Safe update — always operates on a validated object
   const update = (svc, key, value) =>
     setCfg(c => {
       const safe = sanitise(c);
@@ -153,6 +310,9 @@ export default function NotifConfig() {
       const safe = sanitise(c);
       return { ...safe, [svc]: { ...safe[svc], enabled: !safe[svc].enabled } };
     });
+
+  const updatePushover = (value) =>
+    setCfg(c => ({ ...sanitise(c), pushover: value }));
 
   const save = async () => {
     setSaving(true);
@@ -171,7 +331,7 @@ export default function NotifConfig() {
   if (!loaded) return <div style={{ color: 'var(--text-3)', fontFamily: 'monospace', fontSize: '0.85rem' }}>Loading…</div>;
 
   return (
-    <div style={{ maxWidth: '580px' }}>
+    <div style={{ maxWidth: '680px' }}>
       <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-1)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
         <Bell size={16} style={{ color: 'var(--accent-amber)' }} /> Notification Services
       </h2>
@@ -186,6 +346,12 @@ export default function NotifConfig() {
           testing={!!testing[svc]}
         />
       ))}
+
+      <PushoverEditor list={cfg.pushover} onChange={updatePushover} />
+
+      <button className="pm-btn" onClick={() => test('pushover')} disabled={!!testing.pushover} style={{ fontSize: '0.78rem', marginBottom: '1rem' }}>
+        <Send size={12} /> {testing.pushover ? 'Sending…' : 'Send Pushover test'}
+      </button>
 
       <Flash msg={msg} />
 
