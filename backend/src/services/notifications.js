@@ -17,32 +17,68 @@ const NOTIF_DEFAULTS = {
   discord:   { enabled: false, url: '' },
   telegram:  { enabled: false, token: '', chatId: '' },
   gotify:    { enabled: false, url: '', token: '', priority: 5 },
-  pushover:  { enabled: false, token: '', userKey: '', priority: 0, sound: 'default' },
+  pushover:  [],
   mqtt:      { enabled: false, broker: '', topic: 'pagermonitor/messages' },
 };
 
+function normalisePushoverInstances(raw) {
+  const src = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+
+  return src.map((entry, idx) => {
+    const obj = entry && typeof entry === 'object' ? entry : {};
+    const capcodes = Array.isArray(obj.capcodes)
+      ? obj.capcodes.map(c => normCapcode(String(c))).filter(Boolean)
+      : [];
+
+    return {
+      enabled: !!obj.enabled,
+      name: String(obj.name || `Pushover ${idx + 1}`),
+      token: String(obj.token || ''),
+      userKey: String(obj.userKey || ''),
+      priority: Number(obj.priority) || 0,
+      sound: String(obj.sound || 'default'),
+      capcodes,
+    };
+  });
+}
+
 function sanitiseConfig(raw) {
-  if (!raw || typeof raw !== 'object') return JSON.parse(JSON.stringify(NOTIF_DEFAULTS));
-  const out = {};
-  for (const svc of ['discord', 'telegram', 'gotify', 'pushover', 'mqtt']) {
-    const src = (raw[svc] && typeof raw[svc] === 'object') ? raw[svc] : {};
-    out[svc]  = { ...NOTIF_DEFAULTS[svc], ...src };
+  if (!raw || typeof raw !== 'object') {
+    return JSON.parse(JSON.stringify(NOTIF_DEFAULTS));
   }
+
+  const out = {};
+  for (const svc of ['discord', 'telegram', 'gotify', 'mqtt']) {
+    const src = (raw[svc] && typeof raw[svc] === 'object') ? raw[svc] : {};
+    out[svc] = { ...NOTIF_DEFAULTS[svc], ...src };
+  }
+
+  out.pushover = normalisePushoverInstances(raw.pushover);
   return out;
 }
 
 function getConfig(orgId) { return sanitiseConfig(ensureConfig(orgId)); }
+
 function updateConfig(orgId, patch) {
   const current = sanitiseConfig(ensureConfig(orgId));
   const next = { ...current };
-  for (const svc of ['discord', 'telegram', 'gotify', 'pushover', 'mqtt']) {
-    if (patch[svc] && typeof patch[svc] === 'object') next[svc] = { ...current[svc], ...patch[svc] };
+
+  for (const svc of ['discord', 'telegram', 'gotify', 'mqtt']) {
+    if (patch[svc] && typeof patch[svc] === 'object') {
+      next[svc] = { ...current[svc], ...patch[svc] };
+    }
   }
+
+  if (patch.pushover !== undefined) {
+    next.pushover = normalisePushoverInstances(patch.pushover);
+  }
+
   if (patch.mqtt) {
     const brokerChanged = patch.mqtt.broker !== undefined && patch.mqtt.broker !== current.mqtt?.broker;
     const disabled = patch.mqtt.enabled === false;
     if (brokerChanged || disabled) disconnectMqtt();
   }
+
   configCache.set(orgId, next);
   saveNotifConfig(orgId, next);
 }
@@ -62,7 +98,10 @@ function passesFilter(msg, orgId) {
       return filter.keywords.some(kw => kw && text.includes(kw.toLowerCase()));
     }
     return true;
-  } catch (e) { logger.warn(`Notification filter failed, letting message through (org ${orgId}): ${e.message}`); return true; }
+  } catch (e) {
+    logger.warn(`Notification filter failed, letting message through (org ${orgId}): ${e.message}`);
+    return true;
+  }
 }
 
 // ── Shared message builder ────────────────────────────────────────────────────
@@ -77,7 +116,7 @@ function buildParts(msg) {
   return { alias, group, hasCoords, mapsUrl, ts };
 }
 
-// ── Discord ───────────────────────────────────────────────────────────────────
+// ── Discord ────────────────────────────────────────────────────────────────
 async function sendDiscord(msg, cfg) {
   const { alias, group, mapsUrl, ts } = buildParts(msg);
 
@@ -103,7 +142,7 @@ async function sendDiscord(msg, cfg) {
   if (!res.ok) { const b = await res.text().catch(() => ''); throw new Error(`Discord ${res.status}: ${b}`); }
 }
 
-// ── Telegram ──────────────────────────────────────────────────────────────────
+// ── Telegram ───────────────────────────────────────────────────────────────
 async function sendTelegram(msg, cfg) {
   const { alias, group, mapsUrl, ts } = buildParts(msg);
 
@@ -129,16 +168,14 @@ async function sendTelegram(msg, cfg) {
 }
 
 function escMd(text) {
-  // Escape MarkdownV2 special chars
   return String(text || '').replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, '\\$&');
 }
 
 function escMdLinkUrl(text) {
-  // Inside MarkdownV2 link URLs, Telegram only requires escaping ")" and "\".
   return String(text || '').replace(/[)\\]/g, '\\$&');
 }
 
-// ── Gotify ────────────────────────────────────────────────────────────────────
+// ── Gotify ────────────────────────────────────────────────────────────────
 async function sendGotify(msg, cfg) {
   const { alias, group, mapsUrl, ts } = buildParts(msg);
 
@@ -162,7 +199,15 @@ async function sendGotify(msg, cfg) {
   if (!res.ok) { const b = await res.text().catch(() => ''); throw new Error(`Gotify ${res.status}: ${b}`); }
 }
 
-// ── Pushover ──────────────────────────────────────────────────────────────────
+// ── Pushover ─────────────────────────────────────────────────────────────
+function matchesPushoverTarget(target, msg) {
+  if (!target || !target.enabled) return false;
+  const msgCapcode = normCapcode(String(msg.capcode));
+  const capcodes = Array.isArray(target.capcodes) ? target.capcodes.map(c => normCapcode(String(c))).filter(Boolean) : [];
+  if (!capcodes.length) return true;
+  return capcodes.includes(msgCapcode);
+}
+
 async function sendPushover(msg, cfg) {
   const { alias, group, mapsUrl, ts } = buildParts(msg);
 
@@ -184,9 +229,8 @@ async function sendPushover(msg, cfg) {
     sound:    cfg.sound || 'default',
   });
 
-  // Add Google Maps URL if coordinates available
   if (mapsUrl) {
-    params.set('url',       mapsUrl);
+    params.set('url', mapsUrl);
     params.set('url_title', 'Open in Google Maps');
   }
 
@@ -198,19 +242,27 @@ async function sendPushover(msg, cfg) {
   if (!res.ok || d.status !== 1) throw new Error(`Pushover error: ${d.errors?.join(', ') || res.status}`);
 }
 
-// ── Send all ──────────────────────────────────────────────────────────────────
-// Called once per org per ingested message (see services/fanout.js) — each org has its
-// own destinations/filter, since the same shared message stream fans out differently
-// depending on who's watching.
+// ── Send all ───────────────────────────────────────────────────────────────
 async function sendNotifications(msg, orgId) {
   if (!passesFilter(msg, orgId)) return;
+
   const c = sanitiseConfig(ensureConfig(orgId));
   const tasks = [];
-  if (c.discord?.enabled  && c.discord?.url)                            tasks.push(sendDiscord(msg,   c.discord));
-  if (c.telegram?.enabled && c.telegram?.token && c.telegram?.chatId)   tasks.push(sendTelegram(msg,  c.telegram));
-  if (c.gotify?.enabled   && c.gotify?.url     && c.gotify?.token)      tasks.push(sendGotify(msg,    c.gotify));
-  if (c.pushover?.enabled && c.pushover?.token && c.pushover?.userKey)  tasks.push(sendPushover(msg,  c.pushover));
-  if (c.mqtt?.enabled     && c.mqtt?.broker)                            tasks.push(sendMqtt(msg,      c.mqtt));
+
+  if (c.discord?.enabled && c.discord?.url) tasks.push(sendDiscord(msg, c.discord));
+  if (c.telegram?.enabled && c.telegram?.token && c.telegram?.chatId) tasks.push(sendTelegram(msg, c.telegram));
+  if (c.gotify?.enabled && c.gotify?.url && c.gotify?.token) tasks.push(sendGotify(msg, c.gotify));
+
+  if (Array.isArray(c.pushover)) {
+    for (const target of c.pushover) {
+      if (target?.enabled && target?.token && target?.userKey && matchesPushoverTarget(target, msg)) {
+        tasks.push(sendPushover(msg, target));
+      }
+    }
+  }
+
+  if (c.mqtt?.enabled && c.mqtt?.broker) tasks.push(sendMqtt(msg, c.mqtt));
+
   await Promise.allSettled(tasks);
 }
 
@@ -222,14 +274,21 @@ async function testNotification(orgId, service) {
     protocol: 'POCSAG1200', baud: 1200,
     message: 'Test notification from PagerMonitor ✓',
     timestamp: new Date().toISOString(),
-    lat: 46.0569, lng: 14.5058,  // Ljubljana coords for testing the maps link
+    lat: 46.0569, lng: 14.5058,
   };
+
   switch (service) {
-    case 'discord':  return sendDiscord(dummy,   c.discord);
-    case 'telegram': return sendTelegram(dummy,  c.telegram);
-    case 'gotify':   return sendGotify(dummy,    c.gotify);
-    case 'pushover': return sendPushover(dummy,  c.pushover);
-    case 'mqtt':     return sendMqtt(dummy,      c.mqtt);
+    case 'discord':  return sendDiscord(dummy, c.discord);
+    case 'telegram': return sendTelegram(dummy, c.telegram);
+    case 'gotify':   return sendGotify(dummy, c.gotify);
+
+    case 'pushover': {
+      const first = Array.isArray(c.pushover) ? c.pushover.find(x => x.enabled && x.token && x.userKey) : null;
+      if (!first) throw new Error('No Pushover target configured');
+      return sendPushover(dummy, first);
+    }
+
+    case 'mqtt':     return sendMqtt(dummy, c.mqtt);
     default: throw new Error(`Unknown service: ${service}`);
   }
 }
