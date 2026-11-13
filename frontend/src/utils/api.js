@@ -40,7 +40,7 @@ export const fetchRules    = () => req('GET', '/api/rules');
 export const saveAlias     = (capcode, body) => req('PUT',    `/api/aliases/${capcode}`, body);
 export const deleteAlias   = (capcode)        => req('DELETE', `/api/aliases/${capcode}`, undefined);
 
-// ── Admin API ─────────────────────────────────────────────────────────────────
+// ── Admin API ────────────────────────────────────────────────────────────────
 const A = (method, path, body) => req(method, path, body, true);
 
 export const adminFetchSystem       = () => A('GET', '/admin/system');
@@ -68,7 +68,7 @@ export const adminPurgeAll        = ()   => A('DELETE', '/admin/db/purge/all');
 export const adminSetNotifConfig  = cfg  => A('PUT', '/admin/notifications/config', cfg);
 export const adminSaveNotifFilter = cfg  => A('PUT', '/admin/notifications/filter', cfg);
 export const adminSaveFeedFilter  = cfg  => A('PUT', '/admin/feed-filter', cfg);
-export const adminTestNotif       = svc  => A('POST', `/admin/notifications/test/${svc}`);
+export const adminTestNotif       = (svc, index) => A('POST', `/admin/notifications/test/${svc}${index === undefined ? '' : `-${index}`}`);
 export const adminSaveDedup       = cfg  => A('PUT', '/admin/dedup', cfg);
 export const adminSaveRule        = rule => A('PUT', '/admin/rules', rule);
 export const adminDeleteRule      = id   => A('DELETE', `/admin/rules/${id}`);
